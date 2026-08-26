@@ -33,9 +33,9 @@ import unittest
 import uuid
 
 from azure.cli.core._environment import get_config_dir
-from azure.cli.core.auth.persistence import (KEYCHAIN_SERVICE_NAME, LIBSECRET_SCHEMA_NAME,
-                                             file_extension_encrypted, file_extension_plaintext,
-                                             file_extension_signal)
+from azure.cli.core.auth.persistence import (ENCRYPTION_FALLBACK_WARNING, KEYCHAIN_SERVICE_NAME,
+                                             LIBSECRET_SCHEMA_NAME, file_extension_encrypted,
+                                             file_extension_plaintext, file_extension_signal)
 from azure.cli.testsdk import LiveScenarioTest
 
 TOKEN_CACHE = 'msal_token_cache'
@@ -944,6 +944,34 @@ class MultiIdentityCredentialScenarioTest(LiveScenarioTest):
                 self.assertFalse(json.loads(payload),
                                  f'{persistence_type} reached the OS credential store without D-Bus')
 
+    def test_first_login_without_dbus_warns_and_records_the_reason(self):
+        """A first sign-in with no keyring must warn, and say why under --debug.
+
+        The warning is the user's only notice that the credentials went to disk in the clear, and
+        the debug line is the only record of what libsecret failed with. The other fallback tests
+        sign in on top of an existing plaintext store, so this is the clean slate case: nothing has
+        been persisted yet, encryption is asked for, and the message has to come from this login.
+        """
+        if not sys.platform.startswith('linux'):
+            self.skipTest('only libsecret can be made unreachable through the environment')
+
+        fallback_env = self._case_env(encrypt=True, dbus_broken=True)
+        _run_az(['account', 'clear'], env=fallback_env, check=False)
+        _remove_persistence_files()
+
+        signed_in = _run_az(self._login_args(self.identities[0]) + ['--debug', '-o', 'none'],
+                            env=fallback_env)
+        stderr = _scrub(signed_in.stderr)
+
+        self.assertIn(ENCRYPTION_FALLBACK_WARNING, stderr,
+                      'the first sign-in did not warn that credentials are stored in plaintext')
+        self.assertIn('Failed to initialize LibsecretPersistence', stderr,
+                      'the reason encryption was unavailable was not written to the debug log')
+
+        # The warning has to be true: nothing may have reached the OS credential store.
+        self._assert_only_plaintext_files_exist()
+        self._assert_nothing_in_os_store()
+
     def test_switching_encryption_on_without_dbus_keeps_using_plaintext(self):
         """With no keyring to encrypt into, turning the setting on changes nothing observable.
 
@@ -1072,6 +1100,27 @@ class MultiIdentityCredentialScenarioTest(LiveScenarioTest):
         if not sys.platform.startswith('linux'):
             self.skipTest('only libsecret can be made unreachable through the environment')
         self._run_matrix_case(encrypt=False, dbus_broken=True)
+
+    def test_encryption_is_on_by_default(self):
+        """With neither the environment override nor the config file set, credentials are encrypted.
+
+        Every other test pins the setting, so should_encrypt_token_cache's fallback is the one
+        thing they cannot see: turning the default back to plaintext would leave the whole suite
+        green. This is the setting a user who has never touched the config runs with.
+        """
+        if not _encryption_available():
+            self.skipTest('OS credential store unavailable, CLI falls back to plaintext')
+
+        # The default only governs when neither the process local override nor the config is set.
+        inherited = os.environ.pop('AZURE_CORE_ENCRYPT_TOKEN_CACHE', None)
+        if inherited is not None:
+            self.addCleanup(os.environ.__setitem__, 'AZURE_CORE_ENCRYPT_TOKEN_CACHE', inherited)
+        _run_az(['config', 'unset', 'core.encrypt_token_cache'], check=False)
+        _remove_persistence_files()
+
+        self._login_all({})
+        self._assert_all_credentials_present({}, encrypted=True)
+        self._assert_token_from_store({}, 'the default store did not serve a token')
 
     def test_opt_out_of_encryption_through_the_config_file(self):
         """core.encrypt_token_cache=false has to work through the config file, not just the env.
