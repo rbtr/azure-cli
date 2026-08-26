@@ -91,9 +91,9 @@ jobs:
         run: |
           set -ev
           python -m pip install --upgrade pip
-          pip install ./src/azure-cli-telemetry
-          pip install -e ./src/azure-cli-core
-          pip install -e ./src/azure-cli
+          # Not editable: PEP 660 editable installs of azure-cli-core and azure-cli each claim the
+          # azure.cli namespace, and only one wins, so `az` cannot find azure.cli.__main__.
+          pip install ./src/azure-cli-telemetry ./src/azure-cli-core ./src/azure-cli
           az --version
 
       - name: Sign in with no keyring, and check what the user is told
