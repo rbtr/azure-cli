@@ -133,3 +133,57 @@ jobs:
       - name: Sign out
         if: always()
         run: az account clear || true
+
+  keyring:
+    name: Silence when the keyring works
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require the federated credential
+        env:
+          client_id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+        run: |
+          if [ -z "$client_id" ] || [ -z "$tenant_id" ]; then
+            echo "::error::Set the AZURE_CLIENT_ID and AZURE_TENANT_ID repository secrets, and add a"
+            echo "::error::federated credential with subject repo:${GITHUB_REPOSITORY}:ref:${GITHUB_REF}"
+            exit 1
+          fi
+
+      - name: Give the runner a keyring
+        run: |
+          set -ev
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            gnome-keyring libsecret-1-0 python3-gi gir1.2-secret-1 dbus-x11
+
+      - name: Install the CLI from source
+        # The system interpreter, not setup-python: the libsecret bindings are the distro's
+        # python3-gi, and a hosted-tool interpreter cannot see them.
+        run: |
+          set -ev
+          python3 -m venv --system-site-packages .cienv
+          .cienv/bin/pip install --upgrade pip
+          .cienv/bin/pip install ./src/azure-cli-telemetry ./src/azure-cli-core ./src/azure-cli
+          .cienv/bin/python -c "import gi; gi.require_version('Secret','1'); from gi.repository import Secret; print('libsecret bindings are importable')"
+
+      - name: Sign in with a working keyring, and check the user is not warned
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CORE_ENCRYPT_TOKEN_CACHE: 'true'
+        run: |
+          set -e
+          token=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+          export AZ_FEDERATED_TOKEN="$token"
+          dbus-run-session -- bash .github/scripts/login_with_keyring.sh
+
+      - name: Sign out
+        if: always()
+        run: .cienv/bin/az account clear || true
