@@ -121,7 +121,7 @@ jobs:
           status=$?
           set -e
           # Anything long enough to be a token goes before a single line is shown.
-          sed -i -E 's/[A-Za-z0-9_.~+/-]{40,}/***/g' login.err login.out
+          python .github/scripts/scrub.py login.err login.out
           if [ $status -ne 0 ]; then
             echo "::error::az login failed"
             tail -40 login.err
