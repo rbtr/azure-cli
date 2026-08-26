@@ -39,10 +39,12 @@ jobs:
           pip install pytest
 
       - name: Unit tests
+        # Only the encryption tests: the rest of test_util.py needs the full CLI dependency set,
+        # which this job deliberately does not install.
         run: |
           python -m pytest \
             src/azure-cli-core/azure/cli/core/auth/tests/test_persistence.py \
-            src/azure-cli-core/azure/cli/core/tests/test_util.py -q
+            "src/azure-cli-core/azure/cli/core/tests/test_util.py::TestShouldEncryptTokenCache" -q
 
       - name: Report what the runner offers
         run: |
