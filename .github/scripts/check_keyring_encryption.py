@@ -10,6 +10,7 @@ The mirror image of check_encryption_warning.py. A warning that cannot be switch
 a bug as one that never appears: users learn to ignore it, and it stops meaning anything.
 """
 
+import json
 import os
 import sys
 
@@ -36,8 +37,14 @@ def check_libsecret_holds_the_cache(failures):
     except Exception as e:  # pylint: disable=broad-except
         failures.append(f'the credential could not be read back from libsecret: {e}')
         return
-    if not payload or 'RefreshToken' not in payload:
-        failures.append('libsecret holds no token cache, so nothing was encrypted')
+    try:
+        cache = json.loads(payload) if payload else {}
+    except ValueError:
+        failures.append('what libsecret returned is not a token cache')
+        return
+    # A client-credential flow issues no refresh token, so an access token is all there is to find.
+    if not cache.get('AccessToken'):
+        failures.append('libsecret holds no access token, so nothing was encrypted')
 
 
 def main(path):
