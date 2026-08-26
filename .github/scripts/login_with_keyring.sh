@@ -13,8 +13,18 @@ set -e
 
 # An empty password creates and unlocks the login keyring in one step. Nothing here guards a real
 # secret: the keyring lives and dies with this job.
-eval "$(printf '' | gnome-keyring-daemon --unlock --components=secrets)"
-export GNOME_KEYRING_CONTROL
+#
+# --login, not --unlock: --unlock asks gcr-prompter to confirm, and a prompter needs a display the
+# runner does not have. --login takes the password over the daemon's control protocol and creates
+# the login keyring if it is missing, so nothing is ever prompted for.
+mkdir -p "$HOME/.local/share/keyrings"
+eval "$(printf 'ci-only-keyring-password' | gnome-keyring-daemon --daemonize --login)"
+export GNOME_KEYRING_CONTROL SSH_AUTH_SOCK
+eval "$(gnome-keyring-daemon --start --components=secrets)"
+export GNOME_KEYRING_CONTROL SSH_AUTH_SOCK
+
+# Fail here rather than inside az if the keyring itself is the problem.
+.cienv/bin/python .github/scripts/check_keyring_roundtrip.py
 
 az() { "$PWD/.cienv/bin/az" "$@"; }
 
