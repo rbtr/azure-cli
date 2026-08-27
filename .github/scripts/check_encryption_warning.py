@@ -4,10 +4,14 @@
 # Licensed under the MIT License. See License.txt in the project root for license information.
 # --------------------------------------------------------------------------------------------
 
-"""Assert that a sign-in with no keyring told the user their credentials are in plaintext.
+"""Assert what a sign-in with no keyring told the user about plaintext storage.
 
-Takes the scrubbed stderr of 'az login --debug'. The warning is the user's only notice, and the
-debug line is the only record of what libsecret failed with.
+Takes the scrubbed stderr of 'az login --debug' and whether the warning is expected.
+
+On a CI agent the warning is deliberately suppressed: it asks the user to make an OS credential
+store available, which cannot be done on a platform-managed machine. The fallback itself must still
+happen and must still be explained in the debug log, so 'absent' checks that only the warning went
+away and nothing else did.
 """
 
 import os
@@ -21,13 +25,20 @@ TOKEN_CACHE = 'msal_token_cache'
 SECRET_STORE = 'service_principal_entries'
 
 
-def main(path):
+def main(path, warning):
+    if warning not in ('present', 'absent'):
+        raise SystemExit(f"expected 'present' or 'absent', got {warning!r}")
+
     with open(path, encoding='utf-8', errors='replace') as f:
         stderr = f.read()
 
     failures = []
-    if ENCRYPTION_FALLBACK_WARNING not in stderr:
+    warned = ENCRYPTION_FALLBACK_WARNING in stderr
+    if warning == 'present' and not warned:
         failures.append('the sign-in did not warn that credentials are stored in plaintext')
+    if warning == 'absent' and warned:
+        failures.append('the sign-in warned about plaintext storage on a platform-managed machine, '
+                        'where the user cannot act on it')
     if 'Failed to initialize LibsecretPersistence' not in stderr:
         failures.append('the reason encryption was unavailable never reached the debug log')
 
@@ -49,9 +60,10 @@ def main(path):
                 print(line)
         return 1
 
-    print('the sign-in warned about plaintext storage and logged why encryption was unavailable')
+    told = 'warned about plaintext storage' if warning == 'present' else 'stayed quiet'
+    print(f'the sign-in {told} and logged why encryption was unavailable')
     return 0
 
 
 if __name__ == '__main__':
-    sys.exit(main(sys.argv[1]))
+    sys.exit(main(sys.argv[1], sys.argv[2]))

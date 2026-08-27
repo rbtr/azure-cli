@@ -2,7 +2,8 @@ name: Encryption Fallback Warning
 
 # Proves the plaintext fallback on a genuinely headless machine. A GitHub hosted runner has no
 # gnome-keyring and no D-Bus session, which is exactly the environment the fallback exists for and
-# the one a developer's laptop cannot reproduce.
+# the one a developer's laptop cannot reproduce. A runner is also a platform-managed machine, so it
+# doubles as the test that the fallback warning is suppressed on a CI agent.
 #
 # The login job needs a federated credential on an Entra application, with subject
 # repo:<owner>/azure-cli:ref:refs/heads/<branch> and issuer https://token.actions.githubusercontent.com,
@@ -44,7 +45,8 @@ jobs:
         run: |
           python -m pytest \
             src/azure-cli-core/azure/cli/core/auth/tests/test_persistence.py \
-            "src/azure-cli-core/azure/cli/core/tests/test_util.py::TestShouldEncryptTokenCache" -q
+            "src/azure-cli-core/azure/cli/core/tests/test_util.py::TestShouldEncryptTokenCache" \
+            "src/azure-cli-core/azure/cli/core/tests/test_util.py::TestUtils::test_in_managed_environment" -q
 
       - name: Report what the runner offers
         run: |
@@ -64,7 +66,7 @@ jobs:
           done
 
   login:
-    name: Warning at sign-in
+    name: No warning on a CI agent
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -105,30 +107,48 @@ jobs:
           AZURE_CORE_ENCRYPT_TOKEN_CACHE: 'true'
         run: |
           set -e
-          # --debug echoes the command line, so the assertion runs over a file that is never printed
-          # unscrubbed and never uploaded.
-          token=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" \
-            | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')
 
-          az account clear || true
-          rm -f "$HOME/.azure"/msal_token_cache.* "$HOME/.azure"/service_principal_entries.*
+          # A fresh ID token per sign-in: they are short lived and meant to be used once.
+          get_token() {
+            curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" \
+              | python -c 'import json,sys; print(json.load(sys.stdin)["value"])'
+          }
 
-          set +e
-          az login --service-principal -u "$AZURE_CLIENT_ID" --tenant "$AZURE_TENANT_ID" \
-            --federated-token "$token" --allow-no-subscriptions --debug -o none \
-            > login.out 2> login.err
-          status=$?
-          set -e
-          # Anything long enough to be a token goes before a single line is shown.
-          python .github/scripts/scrub.py login.err login.out
-          if [ $status -ne 0 ]; then
-            echo "::error::az login failed"
-            tail -40 login.err
-            exit 1
-          fi
+          # $1 is 'gated' or 'ungated', $2 is 'present' or 'absent'.
+          sign_in() {
+            az account clear || true
+            rm -f "$HOME/.azure"/msal_token_cache.* "$HOME/.azure"/service_principal_entries.*
 
-          python .github/scripts/check_encryption_warning.py login.err
+            # env -u, because GITHUB_* cannot be overridden through a step's env: block.
+            unset_ci=""
+            if [ "$1" = ungated ]; then
+              unset_ci="-u GITHUB_ACTIONS -u TF_BUILD -u CI"
+            fi
+
+            set +e
+            # --debug echoes the command line, so the assertion runs over a file that is never
+            # printed unscrubbed and never uploaded.
+            env $unset_ci az login --service-principal -u "$AZURE_CLIENT_ID" \
+              --tenant "$AZURE_TENANT_ID" --federated-token "$(get_token)" \
+              --allow-no-subscriptions --debug -o none > "$1.out" 2> "$1.err"
+            status=$?
+            set -e
+
+            python .github/scripts/scrub.py "$1.err" "$1.out"
+            if [ $status -ne 0 ]; then
+              echo "::error::az login failed ($1)"
+              tail -40 "$1.err"
+              exit 1
+            fi
+            python .github/scripts/check_encryption_warning.py "$1.err" "$2"
+          }
+
+          echo '== as the runner is: GITHUB_ACTIONS is set, so the warning must be suppressed'
+          sign_in gated absent
+
+          echo '== the same sign-in with GITHUB_ACTIONS unset, to show the gate is what silenced it'
+          sign_in ungated present
 
       - name: Sign out
         if: always()
