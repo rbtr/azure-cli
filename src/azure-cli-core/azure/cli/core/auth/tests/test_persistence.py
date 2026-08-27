@@ -47,13 +47,29 @@ class TestEncryptionFallbackWarning(unittest.TestCase):
         self._build_with_libsecret_unavailable()
         self._build_with_libsecret_unavailable()
 
-        with mock.patch.object(persistence.logger, 'warning') as warning_mock:
+        # az's own CI sets TF_BUILD/GITHUB_ACTIONS, which would suppress the warning.
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(persistence.logger, 'warning') as warning_mock:
             persistence.warn_if_encryption_unavailable()
 
         warning_mock.assert_called_once_with(persistence.ENCRYPTION_FALLBACK_WARNING)
 
+    def test_no_warning_in_a_managed_environment(self):
+        # Cloud Shell and CI agents can't have an OS credential store installed, so the advice
+        # to enable encryption is unactionable there.
+        for name, value in [('ACC_CLOUD', 'PROD'), ('GITHUB_ACTIONS', 'true'), ('TF_BUILD', 'True')]:
+            with self.subTest(variable=name):
+                self._build_with_libsecret_unavailable()
+
+                with mock.patch.dict(os.environ, {name: value}, clear=True), \
+                        mock.patch.object(persistence.logger, 'warning') as warning_mock:
+                    persistence.warn_if_encryption_unavailable()
+
+                warning_mock.assert_not_called()
+
     def test_no_warning_without_fallback(self):
-        with mock.patch.object(persistence.logger, 'warning') as warning_mock:
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(persistence.logger, 'warning') as warning_mock:
             persistence.warn_if_encryption_unavailable()
 
         warning_mock.assert_not_called()
