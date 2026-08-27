@@ -115,40 +115,44 @@ jobs:
               | python -c 'import json,sys; print(json.load(sys.stdin)["value"])'
           }
 
-          # $1 is 'gated' or 'ungated', $2 is 'present' or 'absent'.
+          # $1 is a label, $2 is 'present' or 'absent', the rest is passed to env(1).
           sign_in() {
+            label=$1
+            expected=$2
+            shift 2
+
             az account clear || true
             rm -f "$HOME/.azure"/msal_token_cache.* "$HOME/.azure"/service_principal_entries.*
-
-            # env -u, because GITHUB_* cannot be overridden through a step's env: block.
-            unset_ci=""
-            if [ "$1" = ungated ]; then
-              unset_ci="-u GITHUB_ACTIONS -u TF_BUILD -u CI"
-            fi
 
             set +e
             # --debug echoes the command line, so the assertion runs over a file that is never
             # printed unscrubbed and never uploaded.
-            env $unset_ci az login --service-principal -u "$AZURE_CLIENT_ID" \
+            env "$@" az login --service-principal -u "$AZURE_CLIENT_ID" \
               --tenant "$AZURE_TENANT_ID" --federated-token "$(get_token)" \
-              --allow-no-subscriptions --debug -o none > "$1.out" 2> "$1.err"
+              --allow-no-subscriptions --debug -o none > "$label.out" 2> "$label.err"
             status=$?
             set -e
 
-            python .github/scripts/scrub.py "$1.err" "$1.out"
+            python .github/scripts/scrub.py "$label.err" "$label.out"
             if [ $status -ne 0 ]; then
-              echo "::error::az login failed ($1)"
-              tail -40 "$1.err"
+              echo "::error::az login failed ($label)"
+              tail -40 "$label.err"
               exit 1
             fi
-            python .github/scripts/check_encryption_warning.py "$1.err" "$2"
+            python .github/scripts/check_encryption_warning.py "$label.err" "$expected"
           }
 
+          # env -u, because GITHUB_* cannot be overridden through a step's env: block.
           echo '== as the runner is: GITHUB_ACTIONS is set, so the warning must be suppressed'
           sign_in gated absent
 
           echo '== the same sign-in with GITHUB_ACTIONS unset, to show the gate is what silenced it'
-          sign_in ungated present
+          sign_in ungated present -u GITHUB_ACTIONS -u TF_BUILD -u CI
+
+          # An Azure Pipelines agent is the same headless Linux box with a different variable set,
+          # so this covers the TF_BUILD branch without an Azure DevOps organization.
+          echo '== TF_BUILD instead of GITHUB_ACTIONS, as an Azure Pipelines agent would have'
+          sign_in ado absent -u GITHUB_ACTIONS -u CI TF_BUILD=True
 
       - name: Sign out
         if: always()
